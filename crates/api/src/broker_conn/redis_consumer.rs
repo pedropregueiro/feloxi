@@ -369,7 +369,7 @@ fn parse_raw_message(raw_msg: &str) -> Option<ParsedEvent> {
             Err(e) => {
                 tracing::debug!(
                     "Failed to parse raw message as JSON: {e}, raw: {}",
-                    &raw_msg[..raw_msg.len().min(200)]
+                    raw_msg.chars().take(200).collect::<String>()
                 );
                 return None;
             }
