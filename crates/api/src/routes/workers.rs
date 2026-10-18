@@ -109,6 +109,7 @@ pub async fn shutdown_worker(
     Path(worker_id): Path<String>,
 ) -> Result<Json<CommandResponse>, AppError> {
     auth::rbac::check_permission(&user, "workers_shutdown")?;
+    crate::broker_conn::commands::check_broker_action("shutdown").map_err(AppError::Forbidden)?;
 
     if let Ok(configs) =
         db::postgres::broker_configs::list_broker_configs(&state.pg, user.tenant_id).await

@@ -384,6 +384,7 @@ pub async fn publish_task(
     parent_id: Option<&str>,
     root_id: Option<&str>,
 ) -> Result<(), String> {
+    check_broker_action("retry")?;
     match broker_type {
         "redis" => {
             redis_publish_task(
@@ -422,6 +423,7 @@ pub async fn revoke_task(
     task_id: &str,
     terminate: bool,
 ) -> Result<(), String> {
+    check_broker_action("revoke")?;
     match broker_type {
         "redis" => redis_revoke_task(connection_url, task_id, terminate).await,
         "rabbitmq" | "amqp" => amqp_revoke_task(connection_url, task_id, terminate).await,
@@ -435,6 +437,7 @@ pub async fn shutdown_worker(
     connection_url: &str,
     hostname: &str,
 ) -> Result<(), String> {
+    check_broker_action("shutdown")?;
     match broker_type {
         "redis" => redis_shutdown_worker(connection_url, hostname).await,
         "rabbitmq" | "amqp" => amqp_shutdown_worker(connection_url, hostname).await,
@@ -500,6 +503,7 @@ pub async fn purge_queue(
     connection_url: &str,
     queue_name: &str,
 ) -> Result<u64, String> {
+    check_broker_action("purge")?;
     match broker_type {
         "redis" => redis_purge_queue(connection_url, queue_name).await,
         "rabbitmq" | "amqp" => amqp_purge_queue(connection_url, queue_name).await,
@@ -530,6 +534,22 @@ async fn amqp_purge_queue(connection_url: &str, queue_name: &str) -> Result<u64,
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Refuse a broker action (`retry`, `revoke`, `shutdown`, `purge`) unless it's
+/// listed in `FP_ALLOWED_BROKER_ACTIONS` (comma-separated; empty or `none`
+/// blocks all). When the variable is unset, every action is allowed.
+pub fn check_broker_action(action: &str) -> Result<(), String> {
+    match std::env::var("FP_ALLOWED_BROKER_ACTIONS") {
+        Ok(allowed) if !broker_action_allowed(&allowed, action) => {
+            Err(format!("Broker action `{action}` is disabled on this deployment"))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn broker_action_allowed(allowed: &str, action: &str) -> bool {
+    allowed.split(',').any(|a| a.trim().eq_ignore_ascii_case(action))
+}
 
 /// Callers must `quit()` the client when done: with unlimited reconnects, fred
 /// keeps the connection open until QUIT, even after the client is dropped.
@@ -634,6 +654,24 @@ mod tests {
     fn parse_redis_db_with_params() {
         // When there's a query string, the "db" portion won't parse as u8
         assert_eq!(parse_redis_db("redis://localhost:6379/0?timeout=5"), 0);
+    }
+
+    #[test]
+    fn broker_action_allowed_matches_listed_actions() {
+        // Listed actions are allowed, ignoring spaces and case; others are refused
+        assert!(broker_action_allowed("revoke", "revoke"));
+        assert!(broker_action_allowed("retry, Revoke", "revoke"));
+        assert!(!broker_action_allowed("revoke", "purge"));
+    }
+
+    #[test]
+    fn broker_action_allowed_blocks_all_when_empty_or_none() {
+        // An empty list or `none` refuses every action
+        for allowed in ["", "none"] {
+            for action in ["retry", "revoke", "shutdown", "purge"] {
+                assert!(!broker_action_allowed(allowed, action));
+            }
+        }
     }
 
     #[test]

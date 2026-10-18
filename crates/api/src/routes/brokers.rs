@@ -286,6 +286,7 @@ pub async fn purge_queue(
     Path((id, queue_name)): Path<(Uuid, String)>,
 ) -> Result<Json<PurgeQueueResponse>, AppError> {
     auth::rbac::check_permission(&user, "brokers_manage")?;
+    crate::broker_conn::commands::check_broker_action("purge").map_err(AppError::Forbidden)?;
 
     let config =
         db::postgres::broker_configs::get_broker_config(&state.pg, id, user.tenant_id).await?;

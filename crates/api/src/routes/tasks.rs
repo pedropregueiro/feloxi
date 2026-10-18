@@ -247,6 +247,7 @@ pub async fn retry_task(
     Json(req): Json<RetryRequest>,
 ) -> Result<Json<CommandResponse>, AppError> {
     auth::rbac::check_permission(&user, "tasks_retry")?;
+    crate::broker_conn::commands::check_broker_action("retry").map_err(AppError::Forbidden)?;
 
     let args = normalize_call_value(&req.args, CallPart::Args)?;
     let kwargs = normalize_call_value(&req.kwargs, CallPart::Kwargs)?;
@@ -333,6 +334,7 @@ pub async fn revoke_task(
     Path(task_id): Path<String>,
 ) -> Result<Json<CommandResponse>, AppError> {
     auth::rbac::check_permission(&user, "tasks_revoke")?;
+    crate::broker_conn::commands::check_broker_action("revoke").map_err(AppError::Forbidden)?;
 
     if let Some(config) = find_active_broker(&state, user.tenant_id).await {
         let url = crate::broker_conn::secret::connection_url(&state, &config)?;
