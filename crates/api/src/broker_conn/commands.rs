@@ -535,20 +535,22 @@ async fn amqp_purge_queue(connection_url: &str, queue_name: &str) -> Result<u64,
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Refuse a broker action (`retry`, `revoke`, `shutdown`, `purge`) unless it's
-/// listed in `FP_ALLOWED_BROKER_ACTIONS` (comma-separated; empty or `none`
-/// blocks all). When the variable is unset, every action is allowed.
+/// Refuse a broker action (`retry`, `revoke`, `shutdown`, `purge`) listed in
+/// `FP_BLOCKED_BROKER_ACTIONS` (comma-separated; `all` blocks every action).
+/// Unset or empty blocks nothing.
 pub fn check_broker_action(action: &str) -> Result<(), String> {
-    match std::env::var("FP_ALLOWED_BROKER_ACTIONS") {
-        Ok(allowed) if !broker_action_allowed(&allowed, action) => {
-            Err(format!("Broker action `{action}` is disabled on this deployment"))
-        }
-        _ => Ok(()),
+    let blocked = std::env::var("FP_BLOCKED_BROKER_ACTIONS").unwrap_or_default();
+    if broker_action_blocked(&blocked, action) {
+        return Err(format!("Broker action `{action}` is disabled on this deployment"));
     }
+    Ok(())
 }
 
-fn broker_action_allowed(allowed: &str, action: &str) -> bool {
-    allowed.split(',').any(|a| a.trim().eq_ignore_ascii_case(action))
+fn broker_action_blocked(blocked: &str, action: &str) -> bool {
+    blocked
+        .split(',')
+        .map(str::trim)
+        .any(|b| b.eq_ignore_ascii_case(action) || b.eq_ignore_ascii_case("all"))
 }
 
 /// Callers must `quit()` the client when done: with unlimited reconnects, fred
@@ -657,20 +659,19 @@ mod tests {
     }
 
     #[test]
-    fn broker_action_allowed_matches_listed_actions() {
-        // Listed actions are allowed, ignoring spaces and case; others are refused
-        assert!(broker_action_allowed("revoke", "revoke"));
-        assert!(broker_action_allowed("retry, Revoke", "revoke"));
-        assert!(!broker_action_allowed("revoke", "purge"));
+    fn broker_action_blocked_matches_listed_actions() {
+        // Listed actions are blocked, ignoring spaces and case; others still run
+        assert!(broker_action_blocked("purge", "purge"));
+        assert!(broker_action_blocked("retry, Purge", "purge"));
+        assert!(!broker_action_blocked("purge", "revoke"));
     }
 
     #[test]
-    fn broker_action_allowed_blocks_all_when_empty_or_none() {
-        // An empty list or `none` refuses every action
-        for allowed in ["", "none"] {
-            for action in ["retry", "revoke", "shutdown", "purge"] {
-                assert!(!broker_action_allowed(allowed, action));
-            }
+    fn broker_action_blocked_all_and_empty() {
+        // `all` blocks every action; an empty value blocks none
+        for action in ["retry", "revoke", "shutdown", "purge"] {
+            assert!(broker_action_blocked("all", action));
+            assert!(!broker_action_blocked("", action));
         }
     }
 
