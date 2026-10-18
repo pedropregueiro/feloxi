@@ -83,6 +83,7 @@ pub async fn run_redis_consumer(
             Err(e) => {
                 let err = format!("Failed to build subscriber client: {e}");
                 tracing::error!(%config_id, "{}", err);
+                let _ = client.quit().await;
                 let _ = db::postgres::broker_configs::update_broker_config_status(
                     &state.pg,
                     config_id,
@@ -99,6 +100,7 @@ pub async fn run_redis_consumer(
         let err =
             common::redact::redact_url_credentials(&format!("Failed to connect subscriber: {e}"));
         tracing::error!(%config_id, "{}", err);
+        let _ = client.quit().await;
         let _ = db::postgres::broker_configs::update_broker_config_status(
             &state.pg,
             config_id,
@@ -227,6 +229,10 @@ pub async fn run_redis_consumer(
     }
 
     let _ = subscriber.unsubscribe_all().await;
+    // fred keeps clients with unlimited reconnects connected until QUIT,
+    // even after they're dropped, so close them before a restart.
+    let _ = subscriber.quit().await;
+    let _ = client.quit().await;
     let _ = db::postgres::broker_configs::update_broker_config_status(
         &state.pg,
         config_id,
@@ -456,12 +462,21 @@ pub async fn test_redis_connection(url: &str) -> Result<(), String> {
     builder.set_policy(ReconnectPolicy::new_constant(0, 3000));
     let client = builder.build_pool(1).map_err(|e| format!("Failed to build client: {e}"))?;
 
-    tokio::time::timeout(Duration::from_secs(5), client.init())
-        .await
-        .map_err(|_| "Connection timed out after 5 seconds".to_string())?
-        .map_err(|e| common::redact::redact_url_credentials(&format!("Failed to connect: {e}")))?;
+    let result: Result<(), String> = async {
+        tokio::time::timeout(Duration::from_secs(5), client.init())
+            .await
+            .map_err(|_| "Connection timed out after 5 seconds".to_string())?
+            .map_err(|e| {
+                common::redact::redact_url_credentials(&format!("Failed to connect: {e}"))
+            })?;
 
-    let _: String = client.ping::<String>(None).await.map_err(|e| format!("PING failed: {e}"))?;
+        let _: String =
+            client.ping::<String>(None).await.map_err(|e| format!("PING failed: {e}"))?;
 
-    Ok(())
+        Ok(())
+    }
+    .await;
+    let _ = tokio::time::timeout(Duration::from_secs(1), client.quit()).await;
+
+    result
 }

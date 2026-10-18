@@ -30,8 +30,6 @@ pub async fn redis_publish_task(
     parent_id: Option<&str>,
     root_id: Option<&str>,
 ) -> Result<(), String> {
-    let (client, broker) = connect_redis(connection_url).await?;
-
     let effective_root = root_id.unwrap_or(task_id);
 
     let body = serde_json::json!([
@@ -74,12 +72,14 @@ pub async fn redis_publish_task(
     });
 
     let msg = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
-    client
+    let (client, broker) = connect_redis(connection_url).await?;
+    let result = client
         .lpush::<(), _, _>(broker.key(queue), msg.as_str())
         .await
-        .map_err(|e| format!("Failed to LPUSH task: {e}"))?;
+        .map_err(|e| format!("Failed to LPUSH task: {e}"));
+    let _ = client.quit().await;
 
-    Ok(())
+    result
 }
 
 /// Broadcast a Celery remote control command via Redis PUBLISH to the pidbox.
@@ -89,10 +89,6 @@ async fn redis_broadcast_control(
     arguments: serde_json::Value,
     destination: Option<&[&str]>,
 ) -> Result<(), String> {
-    let (client, broker) = connect_redis(connection_url).await?;
-
-    let channel = broker.key(&redis_pidbox_channel(parse_redis_db(&broker.url)));
-
     let control_msg = serde_json::json!({
         "method": method,
         "arguments": arguments,
@@ -103,12 +99,15 @@ async fn redis_broadcast_control(
 
     let envelope = redis_control_envelope(&control_msg, &Uuid::new_v4().to_string())?;
     let msg = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
-    client
+    let (client, broker) = connect_redis(connection_url).await?;
+    let channel = broker.key(&redis_pidbox_channel(parse_redis_db(&broker.url)));
+    let result = client
         .publish::<(), _, _>(channel.as_str(), msg.as_str())
         .await
-        .map_err(|e| format!("Failed to PUBLISH control command: {e}"))?;
+        .map_err(|e| format!("Failed to PUBLISH control command: {e}"));
+    let _ = client.quit().await;
 
-    Ok(())
+    result
 }
 
 /// Pub/sub channel Kombu's Redis transport uses for the `celery.pidbox`
@@ -214,6 +213,7 @@ pub async fn redis_queue_stats(connection_url: &str) -> Result<Vec<QueueInfo>, S
         let depth: u64 = client.llen::<u64, _>(broker.key(name)).await.unwrap_or(0);
         stats.push(QueueInfo { queue_name: name.clone(), depth });
     }
+    let _ = client.quit().await;
 
     Ok(stats)
 }
@@ -511,8 +511,9 @@ async fn redis_purge_queue(connection_url: &str, queue_name: &str) -> Result<u64
     let (client, broker) = connect_redis(connection_url).await?;
     let key = broker.key(queue_name);
     let count: u64 = client.llen(&key).await.unwrap_or(0);
-    client.del::<(), _>(&key).await.map_err(|e| format!("Failed to DEL queue: {e}"))?;
-    Ok(count)
+    let result = client.del::<(), _>(&key).await.map_err(|e| format!("Failed to DEL queue: {e}"));
+    let _ = client.quit().await;
+    result.map(|()| count)
 }
 
 async fn amqp_purge_queue(connection_url: &str, queue_name: &str) -> Result<u64, String> {
@@ -530,6 +531,8 @@ async fn amqp_purge_queue(connection_url: &str, queue_name: &str) -> Result<u64,
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/// Callers must `quit()` the client when done: with unlimited reconnects, fred
+/// keeps the connection open until QUIT, even after the client is dropped.
 async fn connect_redis(url: &str) -> Result<(Client, RedisBrokerUrl), String> {
     let broker = RedisBrokerUrl::parse(url);
     let config =
@@ -539,10 +542,12 @@ async fn connect_redis(url: &str) -> Result<(Client, RedisBrokerUrl), String> {
     let client =
         builder.build().map_err(|e| redact(format!("Failed to build Redis client: {e}")))?;
 
-    tokio::time::timeout(std::time::Duration::from_secs(5), client.init())
-        .await
-        .map_err(|_| "Redis connection timed out".to_string())?
-        .map_err(|e| redact(format!("Failed to connect to Redis: {e}")))?;
+    let Ok(init) = tokio::time::timeout(std::time::Duration::from_secs(5), client.init()).await
+    else {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), client.quit()).await;
+        return Err("Redis connection timed out".to_string());
+    };
+    init.map_err(|e| redact(format!("Failed to connect to Redis: {e}")))?;
 
     Ok((client, broker))
 }
