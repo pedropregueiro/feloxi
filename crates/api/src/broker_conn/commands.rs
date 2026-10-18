@@ -620,7 +620,8 @@ impl RedisBrokerUrl {
         for pair in query.split('&') {
             let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
             if key == PARAM {
-                prefix = value.to_string();
+                prefix =
+                    percent_encoding::percent_decode_str(value).decode_utf8_lossy().into_owned();
             } else {
                 kept.push(pair);
             }
@@ -702,6 +703,15 @@ mod tests {
             RedisBrokerUrl::parse("redis://localhost:6379/0?timeout=5&global_keyprefix=myapp:&a=b");
         assert_eq!(broker.url, "redis://localhost:6379/0?timeout=5&a=b");
         assert_eq!(broker.prefix, "myapp:");
+    }
+
+    #[test]
+    fn redis_broker_url_percent_decodes_prefix() {
+        // Encoded characters, like a Redis Cluster hash tag, are decoded
+        let broker =
+            RedisBrokerUrl::parse("redis://localhost:6379/0?global_keyprefix=%7Bmyapp%7D.");
+        assert_eq!(broker.prefix, "{myapp}.");
+        assert_eq!(broker.key("emails"), "{myapp}.emails");
     }
 
     #[test]

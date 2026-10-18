@@ -35,6 +35,7 @@ clickhouse = { workspace = true }
 sqlx = { workspace = true }
 lapin = { workspace = true }
 base64 = { workspace = true }
+percent-encoding = { workspace = true }
 tokio-util = { workspace = true }
 utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }

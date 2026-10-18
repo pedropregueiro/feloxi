@@ -80,6 +80,7 @@ lapin = "2"
 
 # Encoding
 base64 = "0.22"
+percent-encoding = "2"
 
 # OpenAPI
 utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
